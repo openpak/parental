@@ -15,9 +15,9 @@ adapters; nothing Nintendo-, Microsoft- or Sony-shaped is interpreted here.
 | Repository | `github.com/openpak/parental` (private), checkout `platforms/core/infra/parental` |
 | Module / image | `github.com/openpak/parental`, `ghcr.io/openpak/parental` |
 | Language, storage | Go, Postgres (database `parental`), embedded migrations applied at start |
-| Ports | block **20170**: 20170 HTTP, 20171 gRPC, 20172 metrics (reserved). 20160 is taken by `voice`, which is not yet in `docs/ports.md`; both rows still have to be added there |
+| Ports | block **20170**: 20170 HTTP, 20171 gRPC, 20172 metrics (reserved). 20160 is taken by `voice`, which is not yet in the port plan (https://docs.openpak.org/contributors/ports/); both rows still have to be added there |
 | License | AGPL-3.0-only, like `account`, `chat` and `voice` |
-| Federation | home only. A region node never holds parental data (`docs/federation.md`: nodes hold no accounts, no links) |
+| Federation | home only. A region node never holds parental data (see https://docs.openpak.org/self-hosting/federation/: nodes hold no accounts, no links) |
 
 ## 2. Data model
 
@@ -231,7 +231,7 @@ would use.
 
 The shapes are nx-pctl's `pctlSettingSchema` (the console's parse table, docs study §5b).
 This service never builds a Switch document; the console-facing wire contract is
-`docs/switch/parental-controls-firmware-2026-09-26.md` and stays nx-pctl's.
+internal research notes and stays nx-pctl's.
 
 ## 7. Privacy rules
 
@@ -271,7 +271,7 @@ Decided 2026-10-23 (defaults, revisit freely):
 5. **PIN at rest.** The console PIN stays stored as today (plain, in the device blob). Known
    risk, see section 7.
 6. **Ports.** 20170 (parental) and 20160 (voice) are to be registered in the workspace
-   `docs/ports.md`; the lines are listed in next-session.md (that repo is not edited here).
+   the port plan (https://docs.openpak.org/contributors/ports/); the lines are listed in next-session.md (that repo is not edited here).
 
 ## 9. nx-pctl cutover plan
 

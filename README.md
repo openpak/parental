@@ -58,7 +58,7 @@ go run ./cmd/parental
 ```
 
 Needs Postgres and the account core (gRPC and HTTP). Ports: 20170 HTTP, 20171 gRPC,
-20172 reserved (block 20170; not yet in `docs/ports.md`).
+20172 reserved (block 20170; not yet in the port plan (https://docs.openpak.org/contributors/ports/)).
 
 ## Tests
 
