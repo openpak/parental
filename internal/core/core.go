@@ -92,16 +92,34 @@ func (c *Client) Whoami(ctx context.Context, bearer string) (string, error) {
 
 // Active reports whether the account exists and is active.
 func (c *Client) Active(ctx context.Context, account string) (bool, error) {
+	ok, _, err := c.Account(ctx, account)
+	return ok, err
+}
+
+// Account reports whether the account exists and is active, and its birthday
+// (ISO 8601 date, empty when the core holds none). Used only to decide that an
+// under-13 member needs no acceptance; never stored or logged.
+func (c *Client) Account(ctx context.Context, account string) (bool, string, error) {
 	rctx, cancel := context.WithTimeout(c.ctx(ctx), 5*time.Second)
 	defer cancel()
 	resp, err := c.Identity.GetAccount(rctx, &accountv1.GetAccountRequest{AccountId: account})
 	if status.Code(err) == codes.NotFound || status.Code(err) == codes.InvalidArgument {
-		return false, nil
+		return false, "", nil
 	}
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	return resp.GetStatus() == accountv1.AccountStatus_ACCOUNT_STATUS_ACTIVE, nil
+	return resp.GetStatus() == accountv1.AccountStatus_ACCOUNT_STATUS_ACTIVE, resp.GetBirthday(), nil
+}
+
+// Under13 reports whether an ISO birthday puts the person under 13 at now.
+// An empty or unparsable birthday is not under 13: acceptance stays required.
+func Under13(birthday string, now time.Time) bool {
+	b, err := time.Parse("2006-01-02", birthday)
+	if err != nil {
+		return false
+	}
+	return b.AddDate(13, 0, 0).After(now)
 }
 
 // Cursor is where the follower is in the core's stream, kept durably.

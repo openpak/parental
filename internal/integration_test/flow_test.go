@@ -39,6 +39,7 @@ const (
 	guardian = "33333333-3333-4333-8333-333333333333"
 	stranger = "44444444-4444-4444-8444-444444444444"
 	banned   = "55555555-5555-4555-8555-555555555555"
+	kid      = "77777777-7777-4777-8777-777777777777"
 
 	webKey    = "web-key-0123456789abcdef0123456789abcdef"
 	switchKey = "switch-key-0123456789abcdef0123456789abcdef"
@@ -59,7 +60,9 @@ func (f *fakeCore) GetAccount(ctx context.Context, req *accountv1.GetAccountRequ
 	}
 	switch req.GetAccountId() {
 	case parent, member, guardian, stranger:
-		return &accountv1.GetAccountResponse{AccountId: req.GetAccountId(), Status: accountv1.AccountStatus_ACCOUNT_STATUS_ACTIVE}, nil
+		return &accountv1.GetAccountResponse{AccountId: req.GetAccountId(), Status: accountv1.AccountStatus_ACCOUNT_STATUS_ACTIVE, Birthday: "1990-01-01"}, nil
+	case kid:
+		return &accountv1.GetAccountResponse{AccountId: kid, Status: accountv1.AccountStatus_ACCOUNT_STATUS_ACTIVE, Birthday: time.Now().AddDate(-8, 0, 0).Format("2006-01-02")}, nil
 	case banned:
 		return &accountv1.GetAccountResponse{AccountId: banned, Status: accountv1.AccountStatus_ACCOUNT_STATUS_BANNED}, nil
 	}
@@ -540,4 +543,27 @@ func TestDeletedAccountIsPurged(t *testing.T) {
 	if p, _ := e.st.Profile(ctx, member); p.Version != 0 {
 		t.Errorf("member's profile outlived its owner: version %d", p.Version)
 	}
+}
+
+// Decision 2 (2026-10-23): an under-13 member needs no acceptance; an adult
+// supervisor may leave at any time.
+func TestUnder13NeedsNoAcceptanceAndGuardianMayLeave(t *testing.T) {
+	e := setup(t)
+	code, body := e.do(t, parent, "POST", "/v1/me/members", map[string]any{"member_id": kid})
+	want(t, "link under-13", code, 201, body)
+	if body["state"] != "active" {
+		t.Fatalf("under-13 link state %v, want active", body["state"])
+	}
+	code, body = e.do(t, parent, "GET", "/v1/me/members/"+kid+"/profile", nil)
+	if code == 404 {
+		t.Fatalf("supervisor of an under-13 member cannot read: %d %v", code, body)
+	}
+	code, body = e.do(t, parent, "POST", "/v1/me/members/"+kid+"/guardians", map[string]any{"account_id": guardian})
+	want(t, "add guardian", code, 201, body)
+	code, body = e.do(t, guardian, "POST", "/v1/me/supervisions/"+kid+"/"+guardian+"/accept", nil)
+	want(t, "guardian accepts", code, 204, body)
+	code, body = e.do(t, guardian, "DELETE", "/v1/me/supervisions/"+kid+"/"+guardian, nil)
+	want(t, "guardian leaves", code, 204, body)
+	code, body = e.do(t, parent, "DELETE", "/v1/me/supervisions/"+kid+"/"+parent, nil)
+	want(t, "owner leaves", code, 204, body)
 }

@@ -26,6 +26,8 @@ import (
 type Identity interface {
 	Whoami(ctx context.Context, bearer string) (string, error)
 	Active(ctx context.Context, account string) (bool, error)
+	// Account is Active plus the birthday, for the under-13 rule (design section 8).
+	Account(ctx context.Context, account string) (bool, string, error)
 }
 
 type Server struct {
@@ -158,14 +160,31 @@ func (s *Server) invite(w http.ResponseWriter, r *http.Request, me string) {
 		out(w, http.StatusBadRequest, map[string]any{"error": "an account cannot supervise itself"})
 		return
 	}
-	if !s.activeAccount(w, r, member) {
+	if !store.ValidID(member) {
+		out(w, http.StatusBadRequest, map[string]any{"error": "an account id is required"})
 		return
 	}
-	if err := s.Store.Invite(r.Context(), me, member); err != nil {
+	ok, birthday, err := s.Core.Account(r.Context(), member)
+	if err != nil {
+		log.Printf("parental: account lookup: %v", err)
+		out(w, http.StatusBadGateway, map[string]any{"error": "account service unavailable"})
+		return
+	}
+	if !ok {
+		out(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
+	// Under 13 needs no acceptance: the supervisor's link is enough (design section 8).
+	linked := core.Under13(birthday, time.Now())
+	if err := s.Store.Invite(r.Context(), me, member, linked); err != nil {
 		fail(w, err)
 		return
 	}
-	out(w, http.StatusCreated, map[string]any{"member_id": member, "supervisor_id": me, "role": "owner", "state": "pending"})
+	state := "pending"
+	if linked {
+		state = "active"
+	}
+	out(w, http.StatusCreated, map[string]any{"member_id": member, "supervisor_id": me, "role": "owner", "state": state})
 }
 
 func (s *Server) addGuardian(w http.ResponseWriter, r *http.Request, me string) {

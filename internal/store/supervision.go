@@ -75,9 +75,11 @@ func supervisionChanged(ctx context.Context, tx pgx.Tx, actor, action, member, s
 	return emit(ctx, tx, "supervision", supervisor, "", member, actor)
 }
 
-// Invite makes actor the pending owner of member's supervision. The member
-// accepts it; the caller checked with the account core that member exists.
-func (s *Store) Invite(ctx context.Context, actor, member string) error {
+// Invite makes actor the owner of member's supervision: pending until the
+// member accepts it, or active at once when linked (an under-13 member needs no
+// acceptance, design section 8). The caller checked with the account core that
+// member exists and, for linked, that member is under 13.
+func (s *Store) Invite(ctx context.Context, actor, member string, linked bool) error {
 	if !ValidID(actor) || !ValidID(member) {
 		return invalid("member_id must be an account id")
 	}
@@ -88,15 +90,26 @@ func (s *Store) Invite(ctx context.Context, actor, member string) error {
 		if sup, err := isSupervised(ctx, tx, actor); err != nil || sup {
 			return errOr(err, invalid("a supervised account cannot supervise"))
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO supervisions (member_id, supervisor_id, role, state, invited_by)
-			VALUES ($1, $2, 'owner', 'pending', $2)`, member, actor)
+		state, accepted := "pending", "NULL"
+		if linked {
+			if busy, err := isSupervising(ctx, tx, member); err != nil || busy {
+				return errOr(err, invalid("an account that supervises others cannot be supervised"))
+			}
+			state, accepted = "active", "now()"
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO supervisions (member_id, supervisor_id, role, state, invited_by, accepted_at)
+			VALUES ($1, $2, 'owner', $3, $2, `+accepted+`)`, member, actor, state)
 		if uniqueViolation(err) {
 			return ErrConflict
 		}
 		if err != nil {
 			return err
 		}
-		return supervisionChanged(ctx, tx, actor, "supervision.invite", member, actor, "owner")
+		action := "supervision.invite"
+		if linked {
+			action = "supervision.link"
+		}
+		return supervisionChanged(ctx, tx, actor, action, member, actor, "owner")
 	})
 }
 

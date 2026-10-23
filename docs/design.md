@@ -212,13 +212,13 @@ No change to the account core is required for v0.1.0.
 
 The Switch console setting is **per console**, the neutral profile is **per member**. In v0.1.0
 the Switch setting document stays where nx-pctl keeps it (the device blob), unchanged, and is
-not derived from a profile (section 8, decision 3). The table is the mapping a derivation
+not yet derived from a profile (section 8, decision 3). The table is the mapping a derivation
 would use.
 
 | neutral field | Switch (pctl moon setting, nx-pctl) | Wii U / 3DS | Xbox / 360 | PS3 |
 | --- | --- | --- | --- | --- |
 | `rating_age` | `functionalRestrictionLevel: CUSTOM`, `customSettings.ageRestriction {restriction: RESTRICTED, ratingAge}`; `ratingOrganization` from the console's region (override) | TODO | TODO | TODO |
-| `play_time.<day>` | `playTimerRegulations.timerMode: EACH_DAY_OF_THE_WEEK`, `eachDayOfTheWeekRegulations.<day>.timeToPlayInOneDay {enabled, limitTime}`. **The console caps `limitTime` at 360 minutes**; a larger neutral limit has no Switch form | TODO | TODO | TODO |
+| `play_time.<day>` | `playTimerRegulations.timerMode: EACH_DAY_OF_THE_WEEK`, `eachDayOfTheWeekRegulations.<day>.timeToPlayInOneDay {enabled, limitTime}`. **The console caps `limitTime` at 360 minutes**; a larger neutral limit is **clamped to 360** (decision 3, 2026-10-23) | TODO | TODO | TODO |
 | `bedtime` | `eachDayOfTheWeekRegulations.<day>.bedtime {enabled, startingTime, endingTime}`, `bedtimeStartingTime` | TODO | TODO | TODO |
 | `titles.allow` | `whitelistedApplications.<title id>.safeLaunch: ALLOW` | TODO | TODO | TODO |
 | `titles.block` | no pctl field (the console restricts by rating only) | TODO | TODO | TODO |
@@ -244,26 +244,42 @@ Parental data is about minors.
 - The device blob carries the console PIN in clear, as nx-pctl's file does today (the parent
   surface shows it). Database access is therefore the same trust level as nx-pctl's data
   volume (section 8, decision 5).
+- **Known risk: PIN in clear.** A database dump, backup or read-only SQL access exposes every
+  console PIN. Upgrade path: encrypt the device blob (or only the PIN field) with AES-256-GCM
+  under a service key from the environment (`PARENTAL_BLOB_KEY`, with a key id stored beside
+  the ciphertext for rotation); a migration re-encrypts existing rows in place. Until then,
+  restrict database access and keep backups at the same trust level as the nx-pctl volume.
 - Tests and fixtures use made-up UUIDs and made-up names only.
 
-## 8. Decisions the owner must make before a production cutover
+## 8. Owner decisions
 
-1. **Account-core stream.** Keep `parental_changed` on this service's own stream (as built),
-   or add it to the account core's closed `KnownTypes` + constraint (an additive migration)
-   so adapters hear it on the stream they already follow.
-2. **Consent and release.** Members accept an owner invite and cannot leave an active
-   supervision. Should an adult (by birthday in the account core) be able to leave, and
-   should an account under 13 skip acceptance?
-3. **Per console vs per child (Switch).** Keep editing the console document per device (as
-   today), or derive it from one member's profile (which member, when a console has several
-   users?). Also: what a neutral play-time limit over 360 minutes becomes on a Switch.
-4. **Website cutover.** When the parent screens start using this service for supervision and
-   profiles, and whether nx-pctl's `/internal/pctl` stays the Switch device surface.
-5. **PIN at rest.** Accept the PIN in clear in the blob (status quo), or encrypt the blob
-   with a service key.
-6. **Ports.** Register 20170 (and voice's 20160) in `docs/ports.md`.
+Decided 2026-10-23 (defaults, revisit freely):
+
+1. **Account-core stream.** `parental_changed` stays on this service's own stream; no
+   account-core change. Adapters that need it subscribe to `SubscribeEvents` here.
+2. **Consent and release.** An adult supervisor (by birthday in the account core) may leave
+   a supervision at any time. An account under 13 does not need to accept an invite: the
+   supervisor-initiated link is enough. Other members still accept an owner invite. Built: `POST /v1/me/members` links an under-13 member
+   as `active` at once (audit action `supervision.link`); an unknown or missing birthday keeps
+   acceptance required. Owner and guardians could already leave at any time.
+3. **Per console vs per child (Switch).** The Switch setting is per console, derived from the
+   child's profile. A neutral daily limit above 360 minutes is clamped to the console's
+   maximum of 360 (section 6). In v0.1.0 the derivation is not built: the setting document
+   stays in the device blob (nothing to implement yet beyond the documented mapping).
+4. **Website cutover.** The website moves to the new API later; no work now. nx-pctl's
+   `/internal/pctl` stays the Switch device surface.
+5. **PIN at rest.** The console PIN stays stored as today (plain, in the device blob). Known
+   risk, see section 7.
+6. **Ports.** 20170 (parental) and 20160 (voice) are to be registered in the workspace
+   `docs/ports.md`; the lines are listed in next-session.md (that repo is not edited here).
 
 ## 9. nx-pctl cutover plan
+
+Rehearsal 2026-10-23 (step 2 below) passed against a copy of production's `pctl.json`: 7 records,
+2 activated imported (the 2 activated, their parents and PIN state), 5 expired unpaired
+pairing records refused (their `managedBy` is not an account UUID; expired, so harmless to
+drop); import is idempotent; flag-on (from the core, empty file dir) and flag-off answered 24
+of 24 sampled `/moon/v1` and `/internal/pctl` read paths identically.
 
 nx-pctl keeps answering `/moon/v1` exactly as now; only where its records live changes.
 
