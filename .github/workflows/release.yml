@@ -1,0 +1,49 @@
+name: release
+
+# Tag a release (v1.2.3) and this tests and publishes ghcr.io/openpak/parental:1.2.3, :1.2 and
+# :latest for amd64 and arm64. Runs only on pushed v*.*.* tags (or manually) on the OpenPak
+# self-hosted runner (podman + qemu binfmt), so it costs no GitHub-hosted minutes. No private
+# modules are needed. The integration tests skip without PARENTAL_TEST_DATABASE_URL.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: [self-hosted, linux, podman]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Scratch in the runner's temp, not the machine's shared /tmp
+        run: |
+          mkdir -p "$RUNNER_TEMP/scratch"
+          echo "TMPDIR=$RUNNER_TEMP/scratch" >> "$GITHUB_ENV"
+      - name: Test (Go container, GOWORK=off)
+        run: |
+          podman run --rm --pull=newer --platform "linux/$(podman info --format '{{.Host.Arch}}')" -v "$PWD:/src:Z" -w /src \
+            -e GOWORK=off -e GOFLAGS=-buildvcs=false \
+            docker.io/library/golang:1.26-bookworm sh -ec '
+              go vet ./...
+              go test -race -count=1 ./...'
+      - env:
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth.json
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - env:
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth.json
+        run: |
+          set -e
+          IMG="ghcr.io/${{ github.repository }}"
+          case "${GITHUB_REF_NAME}" in v*) VER="${GITHUB_REF_NAME#v}";; *) VER="";; esac
+          podman manifest rm "$IMG:build" 2>/dev/null || true
+          podman build --platform linux/amd64,linux/arm64 --manifest "$IMG:build" .
+          TAGS="latest"; [ -n "$VER" ] && TAGS="$TAGS $VER $(echo "$VER" | cut -d. -f1,2)"
+          for t in $TAGS; do podman manifest push --all "$IMG:build" "docker://$IMG:$t"; done
+          podman manifest rm "$IMG:build"
+          echo "pushed $IMG: $TAGS"
+      - name: Clear scratch and credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/scratch" "$RUNNER_TEMP/auth.json"

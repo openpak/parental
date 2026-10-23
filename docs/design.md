@@ -197,7 +197,9 @@ set of types and `parental_changed` is not in it (section 8, decision 1).
   `PARENTAL_CORE_INTERNAL_KEY`. Existing API.
 - **Lifecycle:** `Events.SubscribeAccountEvents` from a cursor kept in `core_cursor`. On
   `account_deleted` the account's parental data is purged in one transaction: its
-  supervisions (either side), profile, overrides, the devices it owns (with their usage),
+  supervisions (either side; a deleted owner ends the whole supervision of its members,
+  guardians and restrictions included, as when an owner leaves), its profile, overrides,
+  the devices it owns (with their usage),
   its `device_supervisors` rows, and the audit rows about it as a member or by it as actor.
   `account_banned`/`account_unbanned` change nothing: a banned parent's child stays
   supervised, a banned child stays restricted. Existing API.

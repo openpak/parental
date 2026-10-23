@@ -1,0 +1,3 @@
+/parental
+*.env
+!example.env
