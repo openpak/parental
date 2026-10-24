@@ -154,7 +154,7 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	conn.Close(ctx)
-	st, err := store.Open(ctx, url)
+	st, err := store.Open(ctx, url, blobKey(t))
 	if err != nil {
 		t.Fatal(err)
 	}

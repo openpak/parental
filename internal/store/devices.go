@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
 	"slices"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/openpak/parental/internal/blobseal"
 )
 
 // Device is one record under parental controls, as an adapter keeps it. The
@@ -67,6 +70,9 @@ func (d *Device) validate() error {
 	if json.Unmarshal(d.State, &m) != nil || m == nil {
 		return invalid("state_json must be a JSON object")
 	}
+	if _, ok := m["sealed"]; ok {
+		return invalid("state_json may not carry a top-level \"sealed\" member (reserved for sealing at rest)")
+	}
 	sup := []string{d.Owner}
 	for _, a := range d.Supervisors {
 		a = strings.ToLower(a)
@@ -90,14 +96,33 @@ const deviceCols = `id::text, namespace, device_ref, owner_id::text, COALESCE(su
 	state, version, EXTRACT(EPOCH FROM updated_at)::bigint,
 	ARRAY(SELECT account_id::text FROM device_supervisors s WHERE s.device_id = devices.id ORDER BY account_id <> devices.owner_id, account_id)`
 
-func scanDevice(r pgx.Row) (Device, error) {
+// scanDevice reads one row, its blob opened (blobseal).
+func (s *Store) scanDevice(r pgx.Row) (Device, error) {
 	var d Device
 	err := r.Scan(&d.ID, &d.Namespace, &d.Ref, &d.Owner, &d.Subject, &d.PairingCode, &d.PairingExpires, &d.PairedAt,
 		&d.State, &d.Version, &d.UpdatedAt, &d.Supervisors)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, ErrNotFound
 	}
+	if err != nil {
+		return d, err
+	}
+	d.State, err = blobseal.Open(s.blob, d.Namespace, d.Ref, d.State)
 	return d, err
+}
+
+// sealState is the column value for a blob: Postgres's own rendering of it (what a read
+// returned before blobs were sealed, so adapters get the same bytes back), sealed under the
+// store's key; in clear without one.
+func (s *Store) sealState(ctx context.Context, tx pgx.Tx, namespace, ref string, state []byte) ([]byte, error) {
+	var norm []byte
+	if err := tx.QueryRow(ctx, `SELECT $1::jsonb`, string(state)).Scan(&norm); err != nil {
+		return nil, err
+	}
+	if s.blob == nil {
+		return norm, nil
+	}
+	return s.blob.Seal(namespace, ref, norm), nil
 }
 
 // changedKeys names the top-level keys of two JSON objects that differ.
@@ -139,15 +164,24 @@ func (s *Store) PutDevice(ctx context.Context, actor string, d Device, expected 
 	}
 	var out Device
 	err := s.tx(ctx, func(tx pgx.Tx) error {
+		stored, err := s.sealState(ctx, tx, d.Namespace, d.Ref, d.State)
+		if err != nil {
+			return err
+		}
 		var id, subject string
 		var version uint64
 		var state []byte
 		var before []string
-		err := tx.QueryRow(ctx, `SELECT id::text, COALESCE(subject,''), version, state,
+		err = tx.QueryRow(ctx, `SELECT id::text, COALESCE(subject,''), version, state,
 			ARRAY(SELECT account_id::text FROM device_supervisors s WHERE s.device_id = devices.id ORDER BY account_id)
 			FROM devices WHERE namespace = $1 AND device_ref = $2 FOR UPDATE`, d.Namespace, d.Ref).
 			Scan(&id, &subject, &version, &state, &before)
 		created := errors.Is(err, pgx.ErrNoRows)
+		if err == nil {
+			if state, err = blobseal.Open(s.blob, d.Namespace, d.Ref, state); err != nil {
+				return err
+			}
+		}
 		switch {
 		case created && expected != 0:
 			return ErrConflict
@@ -155,7 +189,7 @@ func (s *Store) PutDevice(ctx context.Context, actor string, d Device, expected 
 			err = tx.QueryRow(ctx, `INSERT INTO devices (namespace, device_ref, owner_id, subject, pairing_code,
 				pairing_expires_at, paired_at, state) VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), $6, $7, $8)
 				RETURNING id::text`, d.Namespace, d.Ref, d.Owner, d.Subject, d.PairingCode,
-				unixOrNull(d.PairingExpires), unixOrNull(d.PairedAt), d.State).Scan(&id)
+				unixOrNull(d.PairingExpires), unixOrNull(d.PairedAt), stored).Scan(&id)
 			if uniqueViolation(err) {
 				return ErrSubjectChange // another record of this namespace holds the subject
 			}
@@ -172,7 +206,7 @@ func (s *Store) PutDevice(ctx context.Context, actor string, d Device, expected 
 		default:
 			_, err = tx.Exec(ctx, `UPDATE devices SET owner_id = $2, subject = NULLIF($3,''), pairing_code = NULLIF($4,''),
 				pairing_expires_at = $5, paired_at = $6, state = $7, version = version + 1, updated_at = now()
-				WHERE id = $1`, id, d.Owner, d.Subject, d.PairingCode, unixOrNull(d.PairingExpires), unixOrNull(d.PairedAt), d.State)
+				WHERE id = $1`, id, d.Owner, d.Subject, d.PairingCode, unixOrNull(d.PairingExpires), unixOrNull(d.PairedAt), stored)
 			if uniqueViolation(err) {
 				return ErrSubjectChange
 			}
@@ -207,7 +241,7 @@ func (s *Store) PutDevice(ctx context.Context, actor string, d Device, expected 
 				return err
 			}
 		}
-		out, err = scanDevice(tx.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE id = $1`, id))
+		out, err = s.scanDevice(tx.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE id = $1`, id))
 		return err
 	})
 	return out, err
@@ -215,7 +249,7 @@ func (s *Store) PutDevice(ctx context.Context, actor string, d Device, expected 
 
 // GetDevice is one record of the namespace.
 func (s *Store) GetDevice(ctx context.Context, namespace, ref string) (Device, error) {
-	return scanDevice(s.Pool.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE namespace = $1 AND device_ref = $2`, namespace, ref))
+	return s.scanDevice(s.Pool.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE namespace = $1 AND device_ref = $2`, namespace, ref))
 }
 
 // FindBySubject is the record a paired device belongs to.
@@ -223,7 +257,7 @@ func (s *Store) FindBySubject(ctx context.Context, namespace, subject string) (D
 	if subject == "" {
 		return Device{}, ErrNotFound
 	}
-	return scanDevice(s.Pool.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE namespace = $1 AND subject = $2`, namespace, subject))
+	return s.scanDevice(s.Pool.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE namespace = $1 AND subject = $2`, namespace, subject))
 }
 
 // FindByPairingCode is the record whose code this is, while the code is live.
@@ -232,7 +266,7 @@ func (s *Store) FindByPairingCode(ctx context.Context, namespace, code string) (
 	if code == "" {
 		return Device{}, ErrNotFound
 	}
-	return scanDevice(s.Pool.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE namespace = $1 AND pairing_code = $2
+	return s.scanDevice(s.Pool.QueryRow(ctx, `SELECT `+deviceCols+` FROM devices WHERE namespace = $1 AND pairing_code = $2
 		AND pairing_expires_at > now() ORDER BY pairing_expires_at DESC LIMIT 1`, namespace, code))
 }
 
@@ -246,7 +280,7 @@ func (s *Store) ListDevices(ctx context.Context, namespace, supervisor, after st
 	if err != nil {
 		return nil, "", err
 	}
-	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Device, error) { return scanDevice(r) })
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Device, error) { return s.scanDevice(r) })
 	if err != nil {
 		return nil, "", err
 	}
@@ -426,4 +460,56 @@ func (s *Store) usage(ctx context.Context, deviceID string, since int64, limit i
 		e.Raw = e.Payload
 		return e, err
 	})
+}
+
+// sealDevices seals, in place, every device blob still in clear: the migration that runs
+// at each start, idempotent because a sealed blob is left as it is. Only the column
+// changes -- no version, event or audit row, since the record is the same. Without a key
+// it refuses a database holding sealed blobs, and with one it refuses blobs sealed under
+// another key (a rotation needs the previous key, which nothing reads yet).
+func (s *Store) sealDevices(ctx context.Context) (int, error) {
+	var sealed, foreign int
+	kid := ""
+	if s.blob != nil {
+		kid = s.blob.ID
+	}
+	if err := s.Pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE state->>'kid' IS DISTINCT FROM $1)
+		FROM devices WHERE state ? 'sealed'`, kid).Scan(&sealed, &foreign); err != nil {
+		return 0, err
+	}
+	switch {
+	case s.blob == nil && sealed > 0:
+		return 0, fmt.Errorf("store: %d device blob(s) are sealed and no PARENTAL_BLOB_KEY is configured", sealed)
+	case s.blob == nil:
+		return 0, nil
+	case foreign > 0:
+		return 0, fmt.Errorf("store: %d device blob(s) are sealed under another key than %s", foreign, kid)
+	}
+	n := 0
+	err := pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT id::text, namespace, device_ref, state FROM devices WHERE NOT state ? 'sealed' FOR UPDATE`)
+		if err != nil {
+			return err
+		}
+		type row struct {
+			id, ns, ref string
+			state       []byte
+		}
+		clear, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+			var v row
+			err := r.Scan(&v.id, &v.ns, &v.ref, &v.state)
+			return v, err
+		})
+		if err != nil {
+			return err
+		}
+		for _, v := range clear {
+			if _, err := tx.Exec(ctx, `UPDATE devices SET state = $2 WHERE id = $1`, v.id, s.blob.Seal(v.ns, v.ref, v.state)); err != nil {
+				return err
+			}
+		}
+		n = len(clear)
+		return nil
+	})
+	return n, err
 }

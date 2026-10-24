@@ -241,14 +241,26 @@ Parental data is about minors.
 - Never logged at any level: tokens, PINs, pairing codes, profile or override documents,
   usage payloads. Logged at info level: counts, versions, namespaces, short device refs;
   never an account id beside a name.
-- The device blob carries the console PIN in clear, as nx-pctl's file does today (the parent
-  surface shows it). Database access is therefore the same trust level as nx-pctl's data
-  volume (section 8, decision 5).
-- **Known risk: PIN in clear.** A database dump, backup or read-only SQL access exposes every
-  console PIN. Upgrade path: encrypt the device blob (or only the PIN field) with AES-256-GCM
-  under a service key from the environment (`PARENTAL_BLOB_KEY`, with a key id stored beside
-  the ciphertext for rotation); a migration re-encrypts existing rows in place. Until then,
-  restrict database access and keep backups at the same trust level as the nx-pctl volume.
+- The device blob carries the console PIN (the parent surface shows it, and the console needs
+  it in clear: the setting GET and the device object carry it and the console checks it
+  locally, so it cannot be hashed). **Sealed at rest since 2026-10-24** (decision 5): every
+  blob is encrypted with AES-256-GCM under `PARENTAL_BLOB_KEY` (32 bytes, base64; `_FILE`
+  accepted), the device's namespace and ref as additional data (`internal/blobseal`). The
+  column keeps a JSON object, `{"sealed":"aes-256-gcm/v1","kid","nonce","ciphertext"}`; `kid`
+  is a hash of the key, stored beside each ciphertext for rotation. The whole blob is sealed,
+  not the PIN fields: the blob also keeps hashes over documents holding the PIN (`etag`,
+  `syncedEtag`), from which four digits fall out by brute force. The core seals what Postgres
+  renders of the blob, so adapters read back exactly the bytes they read before.
+- **Migration**: every start seals, in place, the blobs still in clear (no version, audit or
+  event: the record is the same), so it is idempotent. A start without the key is refused;
+  so is one with sealed rows under another key. `PARENTAL_BLOB_INSECURE_PLAINTEXT=1` keeps
+  blobs in clear for development and tests, never production. A top-level `sealed` member in
+  an adapter blob is refused (reserved).
+- **Remaining risk.** Database access plus the key (the service's environment) still opens
+  every PIN; a database dump or backup alone no longer does. Keep the key out of the database
+  host's backups. nx-pctl seals its own `pctl.json` mirror under its own key
+  (`NX_PCTL_BLOB_KEY`), so neither store opens the other's. Rotation is not built: it needs
+  the previous key accepted beside the new one, then a start re-seals every row.
 - Tests and fixtures use made-up UUIDs and made-up names only.
 
 ## 8. Owner decisions
@@ -268,8 +280,8 @@ Decided 2026-10-23 (defaults, revisit freely):
    stays in the device blob (nothing to implement yet beyond the documented mapping).
 4. **Website cutover.** The website moves to the new API later; no work now. nx-pctl's
    `/internal/pctl` stays the Switch device surface.
-5. **PIN at rest.** The console PIN stays stored as today (plain, in the device blob). Known
-   risk, see section 7.
+5. **PIN at rest.** First decided as plain in the device blob; changed 2026-10-24 (owner):
+   the device blob is sealed with AES-256-GCM (section 7), and nx-pctl seals its file.
 6. **Ports.** 20170 (parental) and 20160 (voice) are to be registered in the workspace
    the port plan (https://docs.openpak.org/contributors/ports/); the lines are listed in next-session.md (that repo is not edited here).
 

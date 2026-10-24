@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"regexp"
 	"sort"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/openpak/parental/internal/blobseal"
 	"github.com/openpak/parental/migrations"
 )
 
@@ -39,10 +41,14 @@ func invalid(format string, a ...any) error { return InvalidError{Msg: fmt.Sprin
 type Store struct {
 	Pool *pgxpool.Pool
 	hub  *hub
+	// blob seals the device blobs at rest (blobseal); nil keeps them in clear
+	// (PARENTAL_BLOB_INSECURE_PLAINTEXT=1, development and tests only).
+	blob *blobseal.Key
 }
 
-// Open connects and applies the embedded migrations.
-func Open(ctx context.Context, url string) (*Store, error) {
+// Open connects, applies the embedded migrations and, with a key, seals the device blobs
+// still in clear (sealDevices). A nil key keeps blobs in clear.
+func Open(ctx context.Context, url string, key *blobseal.Key) (*Store, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("store: connect: %w", err)
@@ -55,7 +61,16 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Store{Pool: pool, hub: newHub()}, nil
+	s := &Store{Pool: pool, hub: newHub(), blob: key}
+	n, err := s.sealDevices(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if n > 0 {
+		log.Printf("store: sealed %d device blob(s) kept in clear under key %s", n, key.ID)
+	}
+	return s, nil
 }
 
 func (s *Store) Close() { s.Pool.Close() }

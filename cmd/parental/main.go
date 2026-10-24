@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/health"
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 
+	"github.com/openpak/parental/internal/blobseal"
 	"github.com/openpak/parental/internal/core"
 	"github.com/openpak/parental/internal/grpcapi"
 	"github.com/openpak/parental/internal/store"
@@ -48,6 +49,29 @@ func secret(name string) (string, error) {
 		return strings.TrimSpace(string(b)), nil
 	}
 	return os.Getenv(name), nil
+}
+
+// blobKey is PARENTAL_BLOB_KEY (or _FILE), which seals the device blobs at rest: they hold
+// console PINs. Without it the service does not start, unless
+// PARENTAL_BLOB_INSECURE_PLAINTEXT=1 says blobs may stay in clear (development and tests
+// only, never production): then the key is nil.
+func blobKey() (*blobseal.Key, error) {
+	v, err := secret("PARENTAL_BLOB_KEY")
+	if err != nil {
+		return nil, err
+	}
+	if v == "" {
+		if os.Getenv("PARENTAL_BLOB_INSECURE_PLAINTEXT") == "1" {
+			log.Printf("parental: PARENTAL_BLOB_INSECURE_PLAINTEXT=1: device blobs, console PINs included, are kept in clear (never in production)")
+			return nil, nil
+		}
+		return nil, errors.New("parental: PARENTAL_BLOB_KEY (or _FILE) is required: device blobs hold console PINs (PARENTAL_BLOB_INSECURE_PLAINTEXT=1 for development only)")
+	}
+	k, err := blobseal.Parse(v)
+	if err != nil {
+		return nil, fmt.Errorf("parental: PARENTAL_BLOB_KEY: %w", err)
+	}
+	return k, nil
 }
 
 func main() {
@@ -77,6 +101,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	blobKey, err := blobKey()
+	if err != nil {
+		return err
+	}
 	retention, err := time.ParseDuration(env("PARENTAL_EVENT_RETENTION", "168h"))
 	if err != nil || retention < time.Hour {
 		return errors.New("parental: PARENTAL_EVENT_RETENTION must be a Go duration of at least 1h")
@@ -85,7 +113,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	st, err := store.Open(ctx, dbURL)
+	st, err := store.Open(ctx, dbURL, blobKey)
 	if err != nil {
 		return err
 	}

@@ -48,6 +48,9 @@ the caller may not see is 404.
 - Every change writes its audit row and its `parental_changed` event in its own transaction.
   The audit trail names fields, never values.
 - Never logged: tokens, PINs, pairing codes, documents, usage payloads.
+- Device blobs (they hold console PINs) are sealed at rest with AES-256-GCM under
+  `PARENTAL_BLOB_KEY`, required at start; blobs still in clear are sealed at each start
+  (docs/design.md section 7). `PARENTAL_BLOB_INSECURE_PLAINTEXT=1` is for development only.
 - `account_deleted` on the account core's stream purges the account's parental data.
 
 ## Run
