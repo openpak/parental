@@ -34,5 +34,5 @@ variable they skip; the profile validator and key parser tests always run.
 
 Module `github.com/openpak/parental`, image `ghcr.io/openpak/parental` (static, scratch,
 uid 10001). Release by pushing a `vX.Y.Z` tag (`.github/workflows/release.yml`; tags and
-manual dispatch only). `internal/accountpb` is a copy of the account core's `account` and
-`events` contracts, the way `chat` and `voice` carry them; refresh by re-copying.
+manual dispatch only). The account core's `account` and
+`events` contracts come from `github.com/openpak/account-api`.

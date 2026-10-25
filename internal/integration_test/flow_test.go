@@ -25,7 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	accountv1 "github.com/openpak/parental/internal/accountpb"
+	accountv1 "github.com/openpak/account-api/openpak/account/v1"
 	"github.com/openpak/parental/internal/core"
 	"github.com/openpak/parental/internal/grpcapi"
 	"github.com/openpak/parental/internal/store"

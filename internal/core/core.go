@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	accountv1 "github.com/openpak/parental/internal/accountpb"
+	accountv1 "github.com/openpak/account-api/openpak/account/v1"
 )
 
 // ErrUnauthenticated is a session the core does not accept, or an account that
